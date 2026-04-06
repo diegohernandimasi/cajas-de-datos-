@@ -5,14 +5,32 @@
 
 import { useState, ChangeEvent, useEffect } from 'react';
 import { utils, writeFile } from 'xlsx';
-import { User, Phone, Save, Trash2, FileSpreadsheet, CheckCircle2, Download } from 'lucide-react';
+import { User as UserIcon, Phone, Save, Trash2, FileSpreadsheet, CheckCircle2, Download, LogIn, LogOut, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  collection, 
+  doc, 
+  runTransaction, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp, 
+  Timestamp,
+  User 
+} from './firebase';
 
 interface Client {
   id: number;
   nombre: string;
   apellido: string;
   telefono: string;
+  createdAt: Timestamp;
 }
 
 interface FormData {
@@ -22,6 +40,8 @@ interface FormData {
 }
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const [formData, setFormData] = useState<FormData>({
     nombre: '',
     apellido: '',
@@ -29,23 +49,54 @@ export default function App() {
   });
   const [clients, setClients] = useState<Client[]>([]);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Load clients from localStorage on mount
+  // Auth listener
   useEffect(() => {
-    const savedClients = localStorage.getItem('clients_data');
-    if (savedClients) {
-      try {
-        setClients(JSON.parse(savedClients));
-      } catch (e) {
-        console.error('Error loading clients', e);
-      }
-    }
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
   }, []);
 
-  // Save clients to localStorage whenever the list changes
+  // Real-time clients listener
   useEffect(() => {
-    localStorage.setItem('clients_data', JSON.stringify(clients));
-  }, [clients]);
+    if (!user) {
+      setClients([]);
+      return;
+    }
+
+    const q = query(collection(db, 'clients'), orderBy('createdAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const clientsData = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.data().id,
+      })) as Client[];
+      setClients(clientsData);
+    }, (error) => {
+      console.error("Error fetching clients:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleLogin = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error("Login failed:", error);
+      alert("Error al iniciar sesión");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error("Logout failed:", error);
+    }
+  };
 
   const handleInputChange = (e: ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -58,53 +109,71 @@ export default function App() {
       return;
     }
 
-    // Format data for Excel
-    const excelData = data.map(c => ({
+    // Sort by ID for Excel export
+    const sortedData = [...data].sort((a, b) => a.id - b.id);
+
+    const excelData = sortedData.map(c => ({
       'Nro Registro': c.id,
       'Nombre': c.nombre,
       'Apellido': c.apellido,
-      'Teléfono': c.telefono
+      'Teléfono': c.telefono,
+      'Fecha Registro': c.createdAt?.toDate().toLocaleString() || ''
     }));
 
     const ws = utils.json_to_sheet(excelData);
     const wb = utils.book_new();
     utils.book_append_sheet(wb, ws, 'Clientes');
-
-    // Always use the same filename
     writeFile(wb, 'cliente.xlsx');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formData.nombre || !formData.apellido || !formData.telefono) {
       alert('Por favor complete todos los campos');
       return;
     }
 
-    const nextId = clients.length > 0 ? Math.max(...clients.map(c => c.id)) + 1 : 1;
-    
-    const newClient: Client = {
-      id: nextId,
-      nombre: formData.nombre,
-      apellido: formData.apellido,
-      telefono: formData.telefono,
-    };
+    setIsSaving(true);
+    try {
+      await runTransaction(db, async (transaction) => {
+        const counterRef = doc(db, 'metadata', 'counters');
+        const counterDoc = await transaction.get(counterRef);
+        
+        let nextId = 1;
+        if (counterDoc.exists()) {
+          nextId = counterDoc.data().count + 1;
+        }
+        
+        // Update global counter
+        transaction.set(counterRef, { count: nextId }, { merge: true });
+        
+        // Add new client
+        const clientRef = doc(collection(db, 'clients'));
+        transaction.set(clientRef, {
+          id: nextId,
+          nombre: formData.nombre,
+          apellido: formData.apellido,
+          telefono: formData.telefono,
+          createdAt: serverTimestamp(),
+          uid: user?.uid // Track who added it
+        });
+      });
 
-    const updatedClients = [...clients, newClient];
-    setClients(updatedClients);
+      // Clear the form
+      setFormData({
+        nombre: '',
+        apellido: '',
+        telefono: '',
+      });
 
-    // Export the updated list
-    exportToExcel(updatedClients);
-
-    // Clear the form
-    setFormData({
-      nombre: '',
-      apellido: '',
-      telefono: '',
-    });
-
-    // Show success message
-    setShowSuccess(true);
-    setTimeout(() => setShowSuccess(false), 3000);
+      // Show success message
+      setShowSuccess(true);
+      setTimeout(() => setShowSuccess(false), 3000);
+    } catch (error) {
+      console.error("Transaction failed: ", error);
+      alert("Error al guardar los datos. Intente nuevamente.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleBringData = () => {
@@ -119,12 +188,40 @@ export default function App() {
     });
   };
 
-  const handleResetAll = () => {
-    if (window.confirm('¿Está seguro de que desea borrar TODOS los registros?')) {
-      setClients([]);
-      localStorage.removeItem('clients_data');
-    }
-  };
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center p-4 font-sans">
+        <motion.div 
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="w-full max-w-md bg-white rounded-[32px] shadow-xl p-10 text-center space-y-8"
+        >
+          <div className="p-4 bg-blue-50 w-fit mx-auto rounded-3xl">
+            <FileSpreadsheet className="w-12 h-12 text-blue-600" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-3xl font-bold text-gray-900">Bienvenido</h1>
+            <p className="text-gray-500">Inicie sesión para sincronizar sus datos entre dispositivos</p>
+          </div>
+          <button
+            onClick={handleLogin}
+            className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-3 active:scale-95"
+          >
+            <LogIn className="w-5 h-5" />
+            Iniciar con Google
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f8fafc] flex items-center justify-center p-4 font-sans">
@@ -142,18 +239,29 @@ export default function App() {
               </div>
               <div>
                 <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
-                  Gestión de Clientes
+                  Gestión Global
                 </h1>
                 <p className="text-sm text-gray-500 font-medium">
-                  Registro persistente en cliente.xlsx
+                  Sincronizado en tiempo real
                 </p>
               </div>
             </div>
-            <div className="text-right">
-              <span className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full uppercase tracking-wider">
-                {clients.length} Registros
-              </span>
+            <button 
+              onClick={handleLogout}
+              className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+              title="Cerrar sesión"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="flex items-center justify-between mt-4">
+            <div className="flex items-center gap-2">
+              <img src={user.photoURL || ''} className="w-6 h-6 rounded-full" alt="User" />
+              <span className="text-xs font-semibold text-gray-600">{user.displayName}</span>
             </div>
+            <span className="text-xs font-bold text-blue-600 bg-blue-50 px-3 py-1 rounded-full uppercase tracking-wider">
+              {clients.length} Registros Totales
+            </span>
           </div>
         </div>
 
@@ -163,7 +271,7 @@ export default function App() {
             {/* Nombre */}
             <div className="space-y-2">
               <label className="text-[11px] font-bold text-gray-400 uppercase tracking-[0.1em] flex items-center gap-2 ml-1">
-                <User className="w-3 h-3" />
+                <UserIcon className="w-3 h-3" />
                 Nombre
               </label>
               <input
@@ -179,7 +287,7 @@ export default function App() {
             {/* Apellido */}
             <div className="space-y-2">
               <label className="text-[11px] font-bold text-gray-400 uppercase tracking-[0.1em] flex items-center gap-2 ml-1">
-                <User className="w-3 h-3" />
+                <UserIcon className="w-3 h-3" />
                 Apellido
               </label>
               <input
@@ -214,23 +322,30 @@ export default function App() {
             <div className="flex gap-3">
               <button
                 onClick={handleClear}
-                className="flex-1 px-4 py-4 text-sm font-bold text-gray-500 bg-gray-50 hover:bg-gray-100 rounded-2xl transition-all flex items-center justify-center gap-2 active:scale-95"
+                disabled={isSaving}
+                className="flex-1 px-4 py-4 text-sm font-bold text-gray-500 bg-gray-50 hover:bg-gray-100 rounded-2xl transition-all flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
               >
                 <Trash2 className="w-4 h-4" />
                 Limpiar
               </button>
               <button
                 onClick={handleSave}
-                className="flex-[2] px-4 py-4 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-2xl transition-all shadow-xl shadow-blue-600/20 flex items-center justify-center gap-2 active:scale-95"
+                disabled={isSaving}
+                className="flex-[2] px-4 py-4 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-2xl transition-all shadow-xl shadow-blue-600/20 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
               >
-                <Save className="w-4 h-4" />
-                Guardar Cliente
+                {isSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                {isSaving ? 'Guardando...' : 'Guardar Cliente'}
               </button>
             </div>
             
             <button
               onClick={handleBringData}
-              className="w-full px-4 py-4 text-sm font-bold text-blue-600 bg-white border-2 border-blue-100 hover:border-blue-600 rounded-2xl transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
+              disabled={isSaving}
+              className="w-full px-4 py-4 text-sm font-bold text-blue-600 bg-white border-2 border-blue-100 hover:border-blue-600 rounded-2xl transition-all flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-50"
             >
               <Download className="w-4 h-4" />
               Traer datos (Abrir Excel)
@@ -249,7 +364,7 @@ export default function App() {
             >
               <div className="flex items-center gap-3 p-4 bg-green-50 text-green-700 rounded-2xl border border-green-100 text-sm font-bold shadow-sm">
                 <CheckCircle2 className="w-5 h-5 text-green-500" />
-                ¡Registro #{clients.length} guardado en cliente.xlsx!
+                ¡Registro guardado en la nube!
               </div>
             </motion.div>
           )}
@@ -257,22 +372,20 @@ export default function App() {
 
         {/* Footer Info */}
         <div className="px-8 py-5 bg-gray-50 border-t border-gray-100 flex justify-between items-center">
-          <button 
-            onClick={handleResetAll}
-            className="text-[10px] text-gray-400 hover:text-red-400 uppercase tracking-widest font-bold transition-colors"
-          >
-            Resetear Base de Datos
-          </button>
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-gray-300 font-bold uppercase tracking-widest">
-              v2.0 Persistent
+              v3.0 Cloud Sync
             </span>
-            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+            <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
           </div>
+          <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+            {clients.length > 0 ? `Último ID: ${Math.max(...clients.map(c => c.id))}` : 'Sin registros'}
+          </span>
         </div>
       </motion.div>
     </div>
   );
 }
+
 
 

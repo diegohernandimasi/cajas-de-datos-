@@ -1,0 +1,36 @@
+{
+  "entities": {
+    "Client": {
+      "title": "Client",
+      "description": "Información del cliente registrado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer", "description": "Número de registro correlativo" },
+        "nombre": { "type": "string" },
+        "apellido": { "type": "string" },
+        "telefono": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "nombre", "apellido", "telefono", "createdAt"]
+    },
+    "Counter": {
+      "title": "Counter",
+      "description": "Contador global para IDs correlativos",
+      "type": "object",
+      "properties": {
+        "count": { "type": "integer" }
+      },
+      "required": ["count"]
+    }
+  },
+  "firestore": {
+    "clients": {
+      "schema": { "$ref": "Client" },
+      "description": "Colección de clientes registrados"
+    },
+    "metadata/counters": {
+      "schema": { "$ref": "Counter" },
+      "description": "Contadores globales"
+    }
+  }
+}

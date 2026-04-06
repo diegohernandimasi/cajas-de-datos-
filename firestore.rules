@@ -1,0 +1,55 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: clients
+    // Fields:
+    //   - id: number (required) - Correlative ID
+    //   - nombre: string (required)
+    //   - apellido: string (required)
+    //   - telefono: string (required)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: metadata
+    // Document: counters
+    // Fields:
+    //   - count: number (required)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isValidClient(data) {
+      return data.keys().hasAll(['id', 'nombre', 'apellido', 'telefono', 'createdAt']) &&
+             data.id is number && data.id > 0 &&
+             data.nombre is string && data.nombre.size() > 0 && data.nombre.size() < 100 &&
+             data.apellido is string && data.apellido.size() > 0 && data.apellido.size() < 100 &&
+             data.telefono is string && data.telefono.size() > 0 && data.telefono.size() < 50 &&
+             data.createdAt is timestamp;
+    }
+
+    // Clients collection
+    match /clients/{clientId} {
+      // Allow read for authenticated users
+      allow read: if isAuthenticated();
+      // Allow create for authenticated users with validation
+      allow create: if isAuthenticated() && isValidClient(request.resource.data);
+      // No updates or deletes for now as per user request (only "guardar" and "borrar casillas")
+      allow update, delete: if false;
+    }
+
+    // Metadata collection for counters
+    match /metadata/counters {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && 
+                    request.resource.data.keys().hasAll(['count']) &&
+                    request.resource.data.count is number;
+    }
+  }
+}
