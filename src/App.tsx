@@ -5,7 +5,7 @@
 
 import { useState, ChangeEvent, useEffect } from 'react';
 import { utils, writeFile } from 'xlsx';
-import { User as UserIcon, Phone, Save, Trash2, FileSpreadsheet, CheckCircle2, Download, LogIn, LogOut, Loader2 } from 'lucide-react';
+import { User as UserIcon, Phone, Save, Trash2, FileSpreadsheet, CheckCircle2, Download, LogIn, LogOut, Loader2, AlertCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   auth, 
@@ -24,6 +24,22 @@ import {
   Timestamp,
   User 
 } from './firebase';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: any;
+}
 
 interface Client {
   id: number;
@@ -51,6 +67,24 @@ export default function App() {
   const [showSuccess, setShowSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [dbError, setDbError] = useState<string | null>(null);
+
+  // Error handler for Firestore
+  const handleFirestoreError = (error: any, operationType: OperationType, path: string | null) => {
+    const errInfo: FirestoreErrorInfo = {
+      error: error instanceof Error ? error.message : String(error),
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+        emailVerified: auth.currentUser?.emailVerified,
+      },
+      operationType,
+      path
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    setDbError(`Error de base de datos (${operationType}): ${errInfo.error}`);
+    return errInfo;
+  };
 
   // Auth listener
   useEffect(() => {
@@ -68,15 +102,17 @@ export default function App() {
       return;
     }
 
-    const q = query(collection(db, 'clients'), orderBy('createdAt', 'desc'));
+    const path = 'clients';
+    const q = query(collection(db, path), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const clientsData = snapshot.docs.map(doc => ({
         ...doc.data(),
         id: doc.data().id,
       })) as Client[];
       setClients(clientsData);
+      setDbError(null);
     }, (error) => {
-      console.error("Error fetching clients:", error);
+      handleFirestoreError(error, OperationType.LIST, path);
     });
 
     return () => unsubscribe();
@@ -85,24 +121,10 @@ export default function App() {
   const handleLogin = async () => {
     setAuthError(null);
     try {
-      console.log("Iniciando sesión con Google...");
       await signInWithPopup(auth, googleProvider);
-      console.log("Sesión iniciada con éxito");
     } catch (error: any) {
-      console.error("Error detallado de login:", error);
-      let message = "Ocurrió un error al iniciar sesión.";
-      
-      if (error.code === 'auth/popup-blocked') {
-        message = "El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.";
-      } else if (error.code === 'auth/cancelled-popup-request') {
-        message = "Se canceló la solicitud de inicio de sesión.";
-      } else if (error.code === 'auth/operation-not-allowed') {
-        message = "El inicio de sesión con Google no está habilitado en Firebase.";
-      } else if (error.message) {
-        message = `Error: ${error.message}`;
-      }
-      
-      setAuthError(message);
+      console.error("Login error:", error);
+      setAuthError(error.message || "Error al iniciar sesión");
     }
   };
 
@@ -124,10 +146,7 @@ export default function App() {
       alert('No hay datos para exportar');
       return;
     }
-
-    // Sort by ID for Excel export
     const sortedData = [...data].sort((a, b) => a.id - b.id);
-
     const excelData = sortedData.map(c => ({
       'Nro Registro': c.id,
       'Nombre': c.nombre,
@@ -135,7 +154,6 @@ export default function App() {
       'Teléfono': c.telefono,
       'Fecha Registro': c.createdAt?.toDate().toLocaleString() || ''
     }));
-
     const ws = utils.json_to_sheet(excelData);
     const wb = utils.book_new();
     utils.book_append_sheet(wb, ws, 'Clientes');
@@ -149,6 +167,8 @@ export default function App() {
     }
 
     setIsSaving(true);
+    setDbError(null);
+    const path = 'clients/metadata';
     try {
       await runTransaction(db, async (transaction) => {
         const counterRef = doc(db, 'metadata', 'counters');
@@ -156,13 +176,11 @@ export default function App() {
         
         let nextId = 1;
         if (counterDoc.exists()) {
-          nextId = counterDoc.data().count + 1;
+          nextId = (counterDoc.data().count || 0) + 1;
         }
         
-        // Update global counter
         transaction.set(counterRef, { count: nextId }, { merge: true });
         
-        // Add new client
         const clientRef = doc(collection(db, 'clients'));
         transaction.set(clientRef, {
           id: nextId,
@@ -170,39 +188,22 @@ export default function App() {
           apellido: formData.apellido,
           telefono: formData.telefono,
           createdAt: serverTimestamp(),
-          uid: user?.uid // Track who added it
+          uid: user?.uid
         });
       });
 
-      // Clear the form
-      setFormData({
-        nombre: '',
-        apellido: '',
-        telefono: '',
-      });
-
-      // Show success message
+      setFormData({ nombre: '', apellido: '', telefono: '' });
       setShowSuccess(true);
       setTimeout(() => setShowSuccess(false), 3000);
     } catch (error) {
-      console.error("Transaction failed: ", error);
-      alert("Error al guardar los datos. Intente nuevamente.");
+      handleFirestoreError(error, OperationType.WRITE, path);
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleBringData = () => {
-    exportToExcel(clients);
-  };
-
-  const handleClear = () => {
-    setFormData({
-      nombre: '',
-      apellido: '',
-      telefono: '',
-    });
-  };
+  const handleBringData = () => exportToExcel(clients);
+  const handleClear = () => setFormData({ nombre: '', apellido: '', telefono: '' });
 
   if (loading) {
     return (
@@ -229,7 +230,8 @@ export default function App() {
           </div>
           
           {authError && (
-            <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-medium border border-red-100">
+            <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-medium border border-red-100 flex items-center gap-2 text-left">
+              <AlertCircle className="w-5 h-5 shrink-0" />
               {authError}
             </div>
           )}
@@ -290,8 +292,14 @@ export default function App() {
 
         {/* Form */}
         <div className="p-8 space-y-8">
+          {dbError && (
+            <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-medium border border-red-100 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              {dbError}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 gap-5">
-            {/* Nombre */}
             <div className="space-y-2">
               <label className="text-[11px] font-bold text-gray-400 uppercase tracking-[0.1em] flex items-center gap-2 ml-1">
                 <UserIcon className="w-3 h-3" />
@@ -307,7 +315,6 @@ export default function App() {
               />
             </div>
 
-            {/* Apellido */}
             <div className="space-y-2">
               <label className="text-[11px] font-bold text-gray-400 uppercase tracking-[0.1em] flex items-center gap-2 ml-1">
                 <UserIcon className="w-3 h-3" />
@@ -323,7 +330,6 @@ export default function App() {
               />
             </div>
 
-            {/* Teléfono */}
             <div className="space-y-2">
               <label className="text-[11px] font-bold text-gray-400 uppercase tracking-[0.1em] flex items-center gap-2 ml-1">
                 <Phone className="w-3 h-3" />
@@ -340,7 +346,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Actions */}
           <div className="flex flex-col gap-3">
             <div className="flex gap-3">
               <button
@@ -356,11 +361,7 @@ export default function App() {
                 disabled={isSaving}
                 className="flex-[2] px-4 py-4 text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 rounded-2xl transition-all shadow-xl shadow-blue-600/20 flex items-center justify-center gap-2 active:scale-95 disabled:opacity-50"
               >
-                {isSaving ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Save className="w-4 h-4" />
-                )}
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                 {isSaving ? 'Guardando...' : 'Guardar Cliente'}
               </button>
             </div>
@@ -376,7 +377,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Success Toast */}
         <AnimatePresence>
           {showSuccess && (
             <motion.div
@@ -393,7 +393,6 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        {/* Footer Info */}
         <div className="px-8 py-5 bg-gray-50 border-t border-gray-100 flex justify-between items-center">
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-gray-300 font-bold uppercase tracking-widest">
@@ -409,6 +408,7 @@ export default function App() {
     </div>
   );
 }
+
 
 
 
