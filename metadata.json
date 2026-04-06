@@ -1,0 +1,5 @@
+{
+  "name": "Excel Data Entry",
+  "description": "Captura de datos (Nombre, Apellido, Teléfono) con exportación a Excel.",
+  "requestFramePermissions": []
+}
