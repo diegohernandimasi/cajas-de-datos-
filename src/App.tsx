@@ -50,6 +50,7 @@ export default function App() {
   const [clients, setClients] = useState<Client[]>([]);
   const [showSuccess, setShowSuccess] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   // Auth listener
   useEffect(() => {
@@ -82,11 +83,26 @@ export default function App() {
   }, [user]);
 
   const handleLogin = async () => {
+    setAuthError(null);
     try {
+      console.log("Iniciando sesión con Google...");
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error("Login failed:", error);
-      alert("Error al iniciar sesión");
+      console.log("Sesión iniciada con éxito");
+    } catch (error: any) {
+      console.error("Error detallado de login:", error);
+      let message = "Ocurrió un error al iniciar sesión.";
+      
+      if (error.code === 'auth/popup-blocked') {
+        message = "El navegador bloqueó la ventana emergente. Por favor, permite las ventanas emergentes para este sitio.";
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        message = "Se canceló la solicitud de inicio de sesión.";
+      } else if (error.code === 'auth/operation-not-allowed') {
+        message = "El inicio de sesión con Google no está habilitado en Firebase.";
+      } else if (error.message) {
+        message = `Error: ${error.message}`;
+      }
+      
+      setAuthError(message);
     }
   };
 
@@ -211,6 +227,13 @@ export default function App() {
             <h1 className="text-3xl font-bold text-gray-900">Bienvenido</h1>
             <p className="text-gray-500">Inicie sesión para sincronizar sus datos entre dispositivos</p>
           </div>
+          
+          {authError && (
+            <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm font-medium border border-red-100">
+              {authError}
+            </div>
+          )}
+
           <button
             onClick={handleLogin}
             className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-600/20 hover:bg-blue-700 transition-all flex items-center justify-center gap-3 active:scale-95"
